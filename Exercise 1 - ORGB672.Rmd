@@ -1,0 +1,103 @@
+---
+title: "Exercise 1 ORGB672"
+output: pdf_document
+date: "2023-03-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load required libraries
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(visNetwork)
+```
+
+# Load my linkedin data
+
+```{r}
+file <- "Downloads/Connections.csv"
+linkedin_data <- read_csv(file, skip = 2)
+```
+
+# Remove NA values 
+
+```{r}
+linkedin_data <- linkedin_data %>%
+  filter(!is.na(`First Name`) & !is.na(`Last Name`) & !is.na(Company))
+```
+
+# Keep the connections that work for the same companies
+
+```{r}
+linkedin_data <- linkedin_data[linkedin_data$Company %in% linkedin_data$Company[duplicated(linkedin_data$Company)],]
+
+```
+
+# Get the count of my contacts by their current employer
+
+```{r}
+connections_by_employer <- linkedin_data %>%
+  group_by(Company) %>%
+  summarize("Connection Count" = n())
+```
+
+# Display it
+
+```{r}
+print(connections_by_employer)
+```
+# Calculate the total count of contacts
+
+```{r}
+total_connection_count <- nrow(linkedin_data)
+```
+
+# Display it
+
+```{r}
+print(paste("Total Connection Count:", total_connection_count))
+```
+
+# Create nodes dataframe
+
+```{r}
+linkedin_data$Name <- paste(linkedin_data$`First Name`, substr(linkedin_data$`Last Name`, 1, 1), sep = " ")
+nodes <- linkedin_data %>%
+  mutate(id = Name, label = Name, title = Company) %>%
+  distinct(id, label, title)
+```
+
+# Create edges dataframe
+
+```{r}
+edges <- linkedin_data %>%
+  left_join(linkedin_data, by = "Company") %>%
+  filter(Name.x != Name.y) %>%
+  mutate(from = Name.x,
+         to = Name.y,
+         id = paste(Name.x, Name.y, sep = "-"))
+```
+
+# Plot Using visNetwork 
+
+```{r}
+visNetwork(nodes, edges, width = "100%", height = "600px") %>%
+  visNodes(shape = "circle", font = list(size = 16, color = "black"),
+           shapeProperties = list(useBorderWithImage = FALSE, useImageSize = FALSE,
+                                  useLabelSize = FALSE, useBorder = FALSE),
+           size = 10) %>%
+  visEdges(smooth = FALSE, width = 0.5, color = "black",
+           arrows = list(to = list(scaleFactor = 0.5))) %>%
+  visOptions(highlightNearest = TRUE) %>%
+  visLegend(position = "right", useGroups = TRUE) %>%
+  visGroups(groupname = "Connection IDs", groups = unique(nodes$id))
+```
+
+# I tried to plot differently but it was really messy. 

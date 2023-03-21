@@ -1,0 +1,87 @@
+---
+title: "Exercise 2 - ORGB672"
+author: "Xénia Sozonoff"
+date: "2023-03-21"
+output: beamer_presentation
+---
+
+# Import the libraries
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+```
+
+# Create the dataset
+
+```{r}
+nodes <- tibble(name = c('1', '2', '3', '4', '5', '6','A', 'B', 'C', 'D'))
+edges <- tribble(
+  ~from, ~to,
+  '6', '5',
+  '6', 'D',
+  '6', 'B',
+  '5', 'D',
+  '5', '3',
+  '4', '3',
+  '4', 'C',
+  '3', 'D',
+  '2', '1',
+  '2', 'A',
+  'D', 'B',
+  'D', 'C',
+  'B', 'C',
+  'B', 'A',
+  'C', 'A'
+)
+```
+
+# Create the graph object
+
+```{r}
+g <- tbl_graph(nodes = nodes, edges = edges, directed = FALSE)
+```
+
+# Calculate the metrics
+
+```{r}
+g_metrics <- g %>% 
+  mutate(degree_centrality = centrality_degree(),
+         closeness_centrality = centrality_closeness_harmonic(),
+         betweenness_centrality = centrality_betweenness()) %>%
+  mutate(label = paste0('Seat: ', name, '\n',
+                        'D: ', round(degree_centrality, 3), '\n',
+                        'C: ', round(closeness_centrality, 3), '\n',
+                        'B: ', round(betweenness_centrality, 3)))
+```
+
+# Plot the network graph with labels and centrality values
+
+```{r}
+ggraph(g_metrics, layout = "graphopt") +
+  geom_edge_link(edge_colour = "grey", alpha = 0.5) +
+  geom_node_point(aes(size = 5, color = degree_centrality)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  geom_node_text(aes(label = label), size = 2.5) +
+  theme_graph(foreground = NA) +
+  labs(title = "Fakebook Bus Seat Network",
+       subtitle = "Centrality Measures") +
+  guides(color = FALSE, size = FALSE)
+```
+
+# Print centrality values for seat A, B, C, and D
+
+```{r}
+g_metrics %>%
+  filter(name %in% c("A", "B", "C", "D")) %>%
+  select(name, degree_centrality, closeness_centrality, betweenness_centrality)
+```
+
+# Discuss possible consequences of your choice of a seat. When would this choice be beneficial? When would it be not so beneficial?
+
+```{r}
+print('Regarding degree centrality we can see that seat D has the highest which means that it results in more interactions, so more opportunities for socializing and networking with other passengers. Furthermore, seat D also has a relatively high closeness centrality and betweenness centrality, which further supports the idea that this seat might be the best for networking. On the other hand, Seat A has the lowest degree and closeness centrality. But, seat A has the highest betweenness centrality and it can increases the chance of interacting with a more diverse group of people so there can be possibilities to meet for example someone higher in the work hierarchy and this is interesting for the career development. The other two seats are also well connected and seat C is a more interesting one than seat B.')
+```
+

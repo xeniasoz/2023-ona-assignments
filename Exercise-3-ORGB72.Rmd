@@ -1,0 +1,290 @@
+---
+title: "Exercise 3 - ORGB672"
+author: "Xénia Sozonoff"
+date: "2023-03-25"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Load data
+
+```{r}
+library(arrow)
+library(tidyverse)
+applications <- read_parquet("~/Downloads/app_data_sample.parquet")
+edges <- read_csv("~/Downloads/edges_sample.csv")
+```
+
+```{r}
+applications
+```
+```{r}
+edges
+```
+## Get gender for examiners 
+
+```{r}
+library(gender)
+
+# Get a list of first names without repetitions
+examiner_names <- applications %>% 
+  distinct(examiner_name_first)
+
+examiner_names
+```
+
+```{r}
+# Get a table of names and gender
+library(tidyverse)
+examiner_names_gender <- examiner_names %>% 
+  do(results = gender(.$examiner_name_first, method = "ssa")) %>% 
+  unnest(cols = c(results), keep_empty = TRUE) %>% 
+  select(
+    examiner_name_first = name,
+    gender,
+    proportion_female
+  )
+
+examiner_names_gender
+```
+
+```{r}
+# Remove extra colums from the gender table
+examiner_names_gender <- examiner_names_gender %>% 
+  select(examiner_name_first, gender)
+
+# Joining gender back to the dataset
+applications <- applications %>% 
+  left_join(examiner_names_gender, by = "examiner_name_first")
+
+# Cleaning up
+rm(examiner_names)
+rm(examiner_names_gender)
+gc()
+```
+
+## Guess the examiner’s race
+
+```{r}
+library(wru)
+
+examiner_surnames <- applications %>% 
+  select(surname = examiner_name_last) %>% 
+  distinct()
+
+examiner_surnames
+```
+
+```{r}
+examiner_race <- predict_race(voter.file = examiner_surnames, surname.only = T) %>% 
+  as_tibble()
+```
+
+```{r}
+examiner_race
+```
+```{r}
+examiner_race <- examiner_race %>% 
+  mutate(max_race_p = pmax(pred.asi, pred.bla, pred.his, pred.oth, pred.whi)) %>% 
+  mutate(race = case_when(
+    max_race_p == pred.asi ~ "Asian",
+    max_race_p == pred.bla ~ "black",
+    max_race_p == pred.his ~ "Hispanic",
+    max_race_p == pred.oth ~ "other",
+    max_race_p == pred.whi ~ "white",
+    TRUE ~ NA_character_
+  ))
+
+examiner_race
+```
+```{r}
+# Removing extra columns
+examiner_race <- examiner_race %>% 
+  select(surname,race)
+
+applications <- applications %>% 
+  left_join(examiner_race, by = c("examiner_name_last" = "surname"))
+
+rm(examiner_race)
+rm(examiner_surnames)
+gc()
+```
+
+## Examiner’s tenure
+
+```{r}
+library(lubridate) # to work with dates
+
+examiner_dates <- applications %>% 
+  select(examiner_id, filing_date, appl_status_date) 
+
+examiner_dates
+```
+
+```{r}
+examiner_dates <- examiner_dates %>% 
+  mutate(start_date = ymd(filing_date), end_date = as_date(dmy_hms(appl_status_date)))
+```
+
+```{r}
+examiner_dates <- examiner_dates %>% 
+  group_by(examiner_id) %>% 
+  summarise(
+    earliest_date = min(start_date, na.rm = TRUE), 
+    latest_date = max(end_date, na.rm = TRUE),
+    tenure_days = interval(earliest_date, latest_date) %/% days(1)
+    ) %>% 
+  filter(year(latest_date)<2018)
+
+examiner_dates
+```
+
+```{r}
+applications <- applications %>% 
+  left_join(examiner_dates, by = "examiner_id")
+
+rm(examiner_dates)
+gc()
+```
+
+##  Pick two workgroups to focus on 
+
+```{r}
+# Filter for workgroups 174 and 165
+workgroup1 <- applications %>% 
+  filter(str_sub(examiner_art_unit, 1, 3) == "174")
+workgroup2 <- applications %>% 
+  filter(str_sub(examiner_art_unit, 1, 3) == "165")
+
+# Remove the rows with NA values in the Gender, Race and Tenure columns
+workgroup1 <- workgroup1[!is.na(workgroup1$gender) & !is.na(workgroup1$race)  & !is.na(workgroup1$tenure_days), ]
+workgroup2 <- workgroup2[!is.na(workgroup2$gender) & !is.na(workgroup2$race)  & !is.na(workgroup2$tenure_days), ]
+
+# Calculate proportion of examiners by gender and race
+prop_gender <- data.frame(
+  Workgroup = c("174", "165"),
+  Proportion_Male = c(mean(workgroup1$gender == "male"), mean(workgroup2$gender == "male")),
+  Proportion_Female = c(mean(workgroup1$gender == "female"), mean(workgroup2$gender == "female"))
+)
+
+prop_race <- data.frame(
+  Workgroup = c("174", "165"),
+  Proportion_White = c(mean(workgroup1$race == "white"), mean(workgroup2$race == "white")),
+  Proportion_Black = c(mean(workgroup1$race == "black"), mean(workgroup2$race == "black")),
+  Proportion_Asian = c(mean(workgroup1$race == "Asian"), mean(workgroup2$race == "Asian")),
+  Proportion_Hispanic = c(mean(workgroup1$race == "Hispanic"), mean(workgroup2$race == "Hispanic")),
+  Proportion_Other = c(mean(workgroup1$race == "other"), mean(workgroup2$race == "other"))
+)
+
+# Calculate mean tenure of examiners
+mean_tenure <- data.frame(
+  Workgroup = c("174", "165"),
+  Mean_Tenure = c(mean(workgroup1$tenure_days), mean(workgroup2$tenure_days))
+)
+
+# Combine results into summary statistics table
+summary_statistics <- merge(prop_gender, prop_race, by = "Workgroup")
+summary_statistics <- merge(summary_statistics, mean_tenure, by = "Workgroup")
+
+summary_statistics
+```
+
+```{r}
+# Plot the gender comparison of the two workgroups
+library(ggplot2)
+
+ggplot() +
+  geom_bar(data = workgroup1, aes(x = gender, fill = "174"), alpha = 0.7) +
+  geom_bar(data = workgroup2, aes(x = gender, fill = "165"), alpha = 0.7) +
+  scale_fill_manual(name = "Workgroup", values = c("174" = "coral", "165" = "skyblue")) +
+  labs(title = "Gender Comparison Between Workgroups", x = "Gender", y = "Number of Examiners") +
+  theme_classic()
+```
+
+```{r}
+ggplot() +
+  geom_bar(data = workgroup1, aes(x = race, fill = "174"), alpha = 0.7) +
+  geom_bar(data = workgroup2, aes(x = race, fill = "165"), alpha = 0.7) +
+  scale_fill_manual(name = "Workgroup", values = c("174" = "coral", "165" = "skyblue")) +
+  labs(title = "Race Comparison Between Workgroups", x = "Race", y = "Number of Examiners") +
+  theme_classic()
+```
+
+```{r}
+# Plot the tenure comparison of the two workgroups
+ggplot() +
+  geom_density(data = workgroup1, aes(x = tenure_days, color = "174"), alpha = 0.7) +
+  geom_density(data = workgroup2, aes(x = tenure_days, color = "165"), alpha = 0.7) +
+  scale_color_manual(name = "Workgroup", values = c("174" = "coral", "165" = "skyblue")) +
+  labs(title = "Tenure Comparison Between Workgroups", x = "Tenure days", y = "Density") +
+  theme_classic()
+```
+
+There are noticeable differences in the gender and race composition of workgroup1 (174) and workgroup2 (165). Workgroup1 has a higher proportion of male and white examiners, while workgroup2 has a higher proportion of female, black, Asian, and Hispanic examiners. Both workgroups have a predominance of white examiners over other races. The difference in mean tenure between the two workgroups is small, with workgroup2 having a slightly higher mean tenure.
+
+## 3 Centrality scores 
+
+```{r}
+# Filter edges to include only the selected workgroups
+workgroup_edges <- edges%>%
+  filter(ego_examiner_id %in% workgroup1$examiner_id | ego_examiner_id %in% workgroup2$examiner_id |
+           alter_examiner_id %in% workgroup1$examiner_id | alter_examiner_id %in% workgroup2$examiner_id)
+
+applications <- applications %>%
+  filter(!is.na(gender), !is.na(race), !is.na(tenure_days))
+
+# Create the advice network
+advice_network <- graph_from_data_frame(workgroup_edges, directed = TRUE)
+
+#Check if the advice network is connected 
+is.connected(advice_network)
+
+# Get the clusters in the network
+advice_clusters <- clusters(advice_network)
+
+# Get the nodes in the largest cluster
+largest_cluster <- which.max(advice_clusters$csize)
+cluster_nodes <- as.numeric(membership(advice_clusters)[which(advice_clusters$membership == largest_cluster)])
+
+# Remove isolated nodes
+isolated_nodes <- V(advice_network)[degree(advice_network, mode="total") == 0]
+advice_network <- delete.vertices(advice_network, isolated_nodes)
+
+# Extract the largest connected component
+largest_component <- components(advice_network)$membership == which.max(components(advice_network)$csize)
+advice_network <- induced.subgraph(advice_network, largest_component)
+
+# Calculate centrality scores
+centrality_scores <- data.frame(
+  name = as.character(V(advice_network)$name),
+  degree = degree(advice_network, mode = "in"),
+  closeness = closeness(advice_network, mode = "in"),
+  betweenness = betweenness(advice_network, directed = TRUE)
+)
+
+# Print the top 10 examiners by degree centrality
+top_degree_centrality <- centrality_scores %>% 
+  arrange(desc(degree)) %>% 
+  head(10)
+
+top_degree_centrality
+
+# Print the top 10 examiners by closeness centrality
+top_closeness_centrality <- centrality_scores %>% 
+  arrange(desc(closeness)) %>% 
+  head(10)
+
+top_closeness_centrality
+
+# Print the top 10 examiners by betweenness centrality
+top_betweenness_centrality <- centrality_scores %>% 
+  arrange(desc(betweenness)) %>% 
+  head(10)
+
+top_betweenness_centrality
+```
+
+### Characterize and discuss the relationship between centrality and other examiners’ characteristics
+
+It is difficult here to conclude and to draw a clear relationship between centrality and other examiners' characteristics. However, we can see that the examiners with the highest degree centrality do not necessarily have the highest closeness centrality scores.There was certainly a gap in the code, I should have created tables that allowed to understand the relationship between centrality scores and gender, race, and tenure days. I should have added this information as well as which workgroup I was referring to, in order to draw a correct conclusion.

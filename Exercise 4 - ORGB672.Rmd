@@ -1,0 +1,227 @@
+---
+title: "Exercise 4 - ORGB672"
+author: "Xénia Sozonoff"
+date: "2023-04-03"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load data
+
+```{r}
+library(arrow)
+library(tidyverse)
+applications <- read_parquet("~/Downloads/app_data_sample.parquet")
+edges <- read_csv("~/Downloads/edges_sample.csv")
+```
+
+
+## Add gender for examiners 
+
+```{r}
+library(gender)
+
+# Get a list of first names without repetitions
+examiner_names <- applications %>% 
+  distinct(examiner_name_first)
+
+examiner_names
+```
+
+```{r}
+# Get a table of names and gender
+library(tidyverse)
+examiner_names_gender <- examiner_names %>% 
+  do(results = gender(.$examiner_name_first, method = "ssa")) %>% 
+  unnest(cols = c(results), keep_empty = TRUE) %>% 
+  select(
+    examiner_name_first = name,
+    gender,
+    proportion_female
+  )
+
+examiner_names_gender
+```
+
+```{r}
+# Remove extra colums from the gender table
+examiner_names_gender <- examiner_names_gender %>% 
+  select(examiner_name_first, gender)
+
+# Joining gender back to the dataset
+applications <- applications %>% 
+  left_join(examiner_names_gender, by = "examiner_name_first")
+
+# Cleaning up
+rm(examiner_names)
+rm(examiner_names_gender)
+gc()
+```
+
+## Add the examiner’s race
+
+```{r}
+library(wru)
+
+examiner_surnames <- applications %>% 
+  select(surname = examiner_name_last) %>% 
+  distinct()
+
+examiner_surnames
+```
+
+```{r}
+examiner_race <- predict_race(voter.file = examiner_surnames, surname.only = T) %>% 
+  as_tibble()
+```
+
+```{r}
+examiner_race
+```
+
+```{r}
+examiner_race <- examiner_race %>% 
+  mutate(max_race_p = pmax(pred.asi, pred.bla, pred.his, pred.oth, pred.whi)) %>% 
+  mutate(race = case_when(
+    max_race_p == pred.asi ~ "Asian",
+    max_race_p == pred.bla ~ "black",
+    max_race_p == pred.his ~ "Hispanic",
+    max_race_p == pred.oth ~ "other",
+    max_race_p == pred.whi ~ "white",
+    TRUE ~ NA_character_
+  ))
+
+examiner_race
+```
+```{r}
+# Removing extra columns
+examiner_race <- examiner_race %>% 
+  select(surname,race)
+
+applications <- applications %>% 
+  left_join(examiner_race, by = c("examiner_name_last" = "surname"))
+
+rm(examiner_race)
+rm(examiner_surnames)
+gc()
+```
+
+## Add the examiner’s tenure
+
+```{r}
+library(lubridate) # to work with dates
+
+examiner_dates <- applications %>% 
+  select(examiner_id, filing_date, appl_status_date) 
+
+examiner_dates
+```
+
+```{r}
+examiner_dates <- examiner_dates %>% 
+  mutate(start_date = ymd(filing_date), end_date = as_date(dmy_hms(appl_status_date)))
+```
+
+```{r}
+examiner_dates <- examiner_dates %>% 
+  group_by(examiner_id) %>% 
+  summarise(
+    earliest_date = min(start_date, na.rm = TRUE), 
+    latest_date = max(end_date, na.rm = TRUE),
+    tenure_days = interval(earliest_date, latest_date) %/% days(1)
+    ) %>% 
+  filter(year(latest_date)<2018)
+
+examiner_dates
+```
+```{r}
+applications <- applications %>% 
+  left_join(examiner_dates, by = "examiner_id")
+rm(examiner_dates)
+gc()
+```
+
+## Create variable for application processing time 
+
+```{r}
+# Create a new variable for app_proc_time
+applications_clean <- applications %>%
+  mutate(app_proc_time = ifelse(!is.na(patent_number),
+                                as.numeric(difftime(patent_issue_date, filing_date, units = "days")),
+                                as.numeric(difftime(abandon_date, filing_date, units = "days")))
+         ) %>%
+  filter(!is.na(app_proc_time))
+
+# Removing the outliers
+applications_clean <- applications_clean %>% 
+  filter(app_proc_time >= 0)
+```
+
+## Use linear regression models 'lm()' to estimate the relationship between centrality and 'app_proc_time'
+
+```{r}
+library(tidygraph)
+library(igraph)
+
+# Create network
+edges <- edges %>%
+  select(from = ego_examiner_id, to = alter_examiner_id, application_number) %>%
+  drop_na()
+nodes <- edges %>% gather() %>%
+  filter(key %in% c('from', 'to')) %>%
+  distinct(value) %>%
+  select(name = value)
+network <- graph_from_data_frame(edges, directed = TRUE, vertices = nodes) %>%
+  as_tbl_graph()
+
+# Estimate centrality
+centrality <- network %>%
+  mutate(degree = centrality_degree(),
+         betweenness = centrality_betweenness(),
+         closeness = centrality_closeness()) %>%
+  as_tibble() %>%
+  mutate(examiner_id = as.numeric(name)) %>%
+  select(examiner_id, degree, betweenness, closeness) %>%
+  drop_na()
+
+# Merge centrality with applications_clean dataset
+applications_centrality <- merge(applications_clean, centrality, by = "examiner_id")
+```
+
+```{r}
+# Fit linear regression model with centrality and control variables
+lm_model <- lm(app_proc_time ~ gender + race + tenure_days + degree + betweenness + closeness, data = applications_centrality)
+summary(lm_model)
+```
+
+##  Does this relationship differ by examiner gender? – Hint: Include an interaction term 'gender x centrality' into your models 
+
+```{r}
+lm_model <- lm(app_proc_time ~ gender + race + tenure_days + degree + betweenness + closeness + gender:degree+ gender:betweenness + gender:closeness, data = applications_centrality)
+summary(lm_model)
+```
+
+## Discuss your findings and their implication for the USPTO
+
+For the first regression : 
+---------------------------
+Based on the linear regression we can see that the examiner's gender, race, tenure_days, degree, betweenness, and closeness are all statistically significant predictors of the application processing time. Moreover, we can see that males tend to have longer processing times compared to females, and white examiners tend to have shorter processing times compared to other racial groups. 
+Regarding the centrality: 
+     * For each unit increase in degree centrality, the processing time is expected to decrease by 0.256 units. 
+     * For each unit increase in betweenness centrality, the processing time is expected to increase by 0.00217 units, but this effect is not statistically significant. 
+     * For each unit increase in closeness centrality, the processing time is expected to decrease by 121.4 units.
+     
+For the second regression : 
+---------------------------
+This model  suggests that male examiners tend to take longer processing times than female examiners. Examiners with higher degrees tend to have shorter processing time. We can see that the effect of betweenness centrality on processing time is not statistically significant as the p-value p-value is 0.449322 which is greater than 0.05. 
+Regarding the interactions between gender and centrality measures are all statistically significant. This means that the relationship between centrality and processing time differs by gender:
+     * Male examiners with higher degrees tend to have longer processing times
+     * Male examiners with higher betweenness centrality tend to decrease the time 
+     * Male examiners with higher closeness centrality tend to have longer processing times
+     
+These findings have implications for the USPTO. In fact, they suggest that certain characteristics of patent examiners may influence their processing times for patent applications. Therefore, the USPTO could consider implementing gender-specific strategies to reduce processing times. For instance, the USPTO could provide additional training and resources to male examiners with higher degree centrality to improve their efficiency. Furthermore, the USPTO could recruit more female examiners with high betweenness centrality to potentially reduce processing times. In the regressions' results we can see that the effect of betweenness centrality on processing time is not statistically significant overall, but the interaction effect with gender suggests that it may have a different impact on male and female examiners. It may be good to investigate further in order to have a better understanding of the potential impact of betweenness centrality on processing time for male and female examiners separately.
